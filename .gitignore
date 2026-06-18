@@ -2,8 +2,8 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 data/
-Themes/
-*.png
+初版.png
+设计蓝图.png
 .DS_Store
 *.log
 .vscode/
