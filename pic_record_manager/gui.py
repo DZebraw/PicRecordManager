@@ -3,8 +3,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QEasingCurve, QEvent, QPoint, QParallelAnimationGroup, QPropertyAnimation, QThread, QSize, Qt
-from PySide6.QtGui import QColor, QFont, QPalette, QPixmap
+from PySide6.QtCore import QEasingCurve, QEvent, QPoint, QParallelAnimationGroup, QPropertyAnimation, QRectF, QThread, QSize, Qt
+from PySide6.QtGui import QColor, QFont, QPainter, QPalette, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -82,11 +82,13 @@ class ArchiveWindow(QMainWindow):
         super().__init__()
         self.workspace = workspace
         self.theme = ThemeAssets(workspace)
+        background_path = self.theme.background_pixmap()
+        self.background_pixmap = QPixmap(str(background_path)) if background_path else QPixmap()
         self.store = ArchiveStore(workspace / "data" / "archive.db", workspace / "data" / "media")
         self.albums: list[Album] = []
         self.selected_album_id: int | None = self.store.list_albums()[0].id
         self.page = 1
-        self.per_page = 6
+        self.per_page = 9
         self.query = ""
         self.view_mode = "grid"
         self.current_page = None
@@ -115,6 +117,23 @@ class ArchiveWindow(QMainWindow):
         self.setCentralWidget(self.stack)
         self._build_list_page()
         self.refresh()
+
+    def paintEvent(self, event) -> None:
+        if self.background_pixmap.isNull():
+            return super().paintEvent(event)
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        scaled = self.background_pixmap.scaled(
+            self.size(),
+            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        x = (self.width() - scaled.width()) / 2
+        y = (self.height() - scaled.height()) / 2
+        painter.drawPixmap(QRectF(x, y, scaled.width(), scaled.height()), scaled, QRectF(scaled.rect()))
+        painter.fillRect(self.rect(), QColor(0, 0, 0, 88))
+        painter.end()
 
     def _dark_palette(self) -> QPalette:
         palette = QPalette()
@@ -201,6 +220,9 @@ class ArchiveWindow(QMainWindow):
         self.scroll.setWidgetResizable(True)
         self.scroll.setObjectName("ContentScroll")
         self.scroll.viewport().setObjectName("ContentViewport")
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll.viewport().installEventFilter(self)
         self.content_widget = QWidget()
         self.content_widget.setObjectName("ContentWidget")
         self.content_grid = QGridLayout(self.content_widget)
@@ -262,7 +284,7 @@ class ArchiveWindow(QMainWindow):
         clear_layout(self.content_grid)
         self.content_widget.setMinimumHeight(0)
         for column in range(PHOTO_GRID_COLUMNS):
-            self.content_grid.setColumnStretch(column, 0)
+            self.content_grid.setColumnStretch(column, 1)
         if not self.current_page.items:
             empty = QLabel("当前书签还没有档案。点击“新建档案”开始添加。")
             empty.setObjectName("EmptyText")
@@ -278,6 +300,39 @@ class ArchiveWindow(QMainWindow):
                 column,
                 Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter,
             )
+        self._resize_content_grid()
+
+    def _resize_content_grid(self) -> None:
+        if not hasattr(self, "scroll") or not hasattr(self, "content_grid"):
+            return
+        viewport_size = self.scroll.viewport().size()
+        if viewport_size.width() <= 0 or viewport_size.height() <= 0:
+            return
+        self.content_widget.setFixedSize(viewport_size)
+        if not self.current_page or not self.current_page.items:
+            return
+
+        margins = self.content_grid.contentsMargins()
+        horizontal_spacing = self.content_grid.horizontalSpacing()
+        vertical_spacing = self.content_grid.verticalSpacing()
+        available_width = (
+            viewport_size.width()
+            - margins.left()
+            - margins.right()
+            - horizontal_spacing * (PHOTO_GRID_COLUMNS - 1)
+        )
+        available_height = (
+            viewport_size.height()
+            - margins.top()
+            - margins.bottom()
+            - vertical_spacing * (PHOTO_GRID_ROWS - 1)
+        )
+        card_width = max(1, available_width // PHOTO_GRID_COLUMNS)
+        card_height = max(1, available_height // PHOTO_GRID_ROWS)
+        for index in range(self.content_grid.count()):
+            widget = self.content_grid.itemAt(index).widget()
+            if isinstance(widget, PhotoCard):
+                widget.set_grid_cell_size(card_width, card_height)
 
     def show_detail(self, photo: Photo) -> None:
         self.detail_photo_id = photo.id
@@ -729,6 +784,10 @@ class ArchiveWindow(QMainWindow):
             self.maximize_button.setToolTip(tooltip)
             self.maximize_button.setAccessibleName(accessible)
 
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._resize_content_grid()
+
     def _run_detail_transition(self, direction: str, on_finished=None) -> None:
         if not hasattr(self, "detail_page") or not hasattr(self, "detail_image_panel"):
             if on_finished is not None:
@@ -782,6 +841,13 @@ class ArchiveWindow(QMainWindow):
             widget.installEventFilter(self)
 
     def eventFilter(self, watched, event) -> bool:
+        if (
+            hasattr(self, "scroll")
+            and watched is self.scroll.viewport()
+            and event.type() == QEvent.Type.Resize
+        ):
+            self._resize_content_grid()
+
         if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
             if self._is_window_drag_event(event):
                 self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
@@ -815,8 +881,15 @@ def clear_layout(layout) -> None:
 
 
 APP_QSS = f"""
-QMainWindow, QWidget#ListPage, QWidget#DetailPage {{
+QMainWindow {{
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {COLOR_BG_GRADIENT_START}, stop:1 {COLOR_BG_GRADIENT_END});
+    color: {COLOR_TEXT};
+    font-family: {FONT_STACK};
+    font-size: 15px;
+    font-weight: 400;
+}}
+QWidget#ListPage, QWidget#DetailPage {{
+    background: transparent;
     color: {COLOR_TEXT};
     font-family: {FONT_STACK};
     font-size: 15px;
@@ -1000,13 +1073,13 @@ QTextEdit {{
 }}
 QScrollArea {{
     border: none;
-    background: {COLOR_BG};
+    background: transparent;
 }}
 QWidget#ContentViewport, QWidget#ContentWidget {{
-    background: {COLOR_BG};
+    background: transparent;
 }}
 QScrollBar:vertical {{
-    background: {COLOR_BG};
+    background: transparent;
     width: 10px;
 }}
 QScrollBar::handle:vertical {{

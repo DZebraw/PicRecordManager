@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QPointF, QRectF, QTimer, Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QPixmap
+from PySide6.QtGui import QColor, QFont, QImage, QLinearGradient, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QGraphicsDropShadowEffect,
@@ -149,6 +149,12 @@ class TiltImagePreview(QWidget):
     MAX_TILT_X = 9.0
     MAX_TILT_Y = 12.0
     EASING = 0.18
+    IMAGE_MARGIN = 48
+    STACK_OFFSET_X = 22
+    STACK_OFFSET_Y = 14
+    LAYER_BORDER_WIDTH = 20
+    STACK_ROTATION_PADDING = 24
+    IMAGE_EDGE_FEATHER = 22
 
     def __init__(self, parent: QWidget | None = None, theme: ThemeAssets | None = None):
         super().__init__(parent)
@@ -254,11 +260,11 @@ class TiltImagePreview(QWidget):
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self._empty_text)
             return
 
-        available = QRectF(self.rect().adjusted(48, 48, -48, -48)).translated(self.current_offset)
+        available = self._available_image_rect().translated(self.current_offset)
         tilt_rotation = self.current_tilt.y() * 0.22
 
         for index, pixmap in enumerate(reversed(self._stack_pixmaps), start=1):
-            layer_rect = QRectF(available).translated(22 * index, -14 * index)
+            layer_rect = QRectF(available).translated(self.STACK_OFFSET_X * index, -self.STACK_OFFSET_Y * index)
             self._draw_pixmap_layer(painter, pixmap, layer_rect, opacity=1.0, rotation=tilt_rotation + 2.8 * index)
         if self.page_transition_active and not self._incoming_pixmap.isNull():
             direction = 1 if self.page_transition_direction == "next" else -1
@@ -269,6 +275,33 @@ class TiltImagePreview(QWidget):
             self._draw_pixmap_layer(painter, self._incoming_pixmap, QRectF(available).translated(incoming_offset, 0), opacity=min(1.0, 0.45 + progress * 0.55), rotation=tilt_rotation)
         else:
             self._draw_pixmap_layer(painter, self._pixmap, QRectF(available), opacity=1.0, rotation=tilt_rotation)
+
+    def _available_image_rect(self) -> QRectF:
+        right_margin = self.IMAGE_MARGIN
+        top_margin = self.IMAGE_MARGIN
+        if self._stack_pixmaps:
+            stack_depth = len(self._stack_pixmaps)
+            right_margin += max(
+                0,
+                int(
+                    self.STACK_OFFSET_X * stack_depth
+                    + self.LAYER_BORDER_WIDTH
+                    + self.STACK_ROTATION_PADDING
+                    + self.MAX_OFFSET_X
+                    - self.IMAGE_MARGIN
+                ),
+            )
+            top_margin += max(
+                0,
+                int(
+                    self.STACK_OFFSET_Y * stack_depth
+                    + self.LAYER_BORDER_WIDTH
+                    + self.STACK_ROTATION_PADDING
+                    + self.MAX_OFFSET_Y
+                    - self.IMAGE_MARGIN
+                ),
+            )
+        return QRectF(self.rect().adjusted(self.IMAGE_MARGIN, top_margin, -right_margin, -self.IMAGE_MARGIN))
 
     def _draw_pixmap_layer(self, painter: QPainter, pixmap: QPixmap, rect: QRectF, *, opacity: float, rotation: float) -> None:
         scaled = pixmap.scaled(rect.size().toSize(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
@@ -289,8 +322,47 @@ class TiltImagePreview(QWidget):
         else:
             painter.setBrush(QColor(255, 255, 255))
             painter.drawRoundedRect(border_rect, 14, 14)
-        painter.drawPixmap(target, scaled, QRectF(scaled.rect()))
+        painter.drawPixmap(target, self._feather_pixmap_edges(scaled), QRectF(scaled.rect()))
         painter.restore()
+
+    def _feather_pixmap_edges(self, pixmap: QPixmap) -> QPixmap:
+        feather = min(self.IMAGE_EDGE_FEATHER, pixmap.width() // 4, pixmap.height() // 4)
+        if feather <= 0:
+            return pixmap
+
+        image = pixmap.toImage().convertToFormat(QImage.Format.Format_ARGB32_Premultiplied)
+        painter = QPainter(image)
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+        self._fade_image_edge(painter, image.width(), image.height(), feather, "left")
+        self._fade_image_edge(painter, image.width(), image.height(), feather, "right")
+        self._fade_image_edge(painter, image.width(), image.height(), feather, "top")
+        self._fade_image_edge(painter, image.width(), image.height(), feather, "bottom")
+        painter.end()
+        return QPixmap.fromImage(image)
+
+    def _fade_image_edge(self, painter: QPainter, width: int, height: int, feather: int, edge: str) -> None:
+        transparent = QColor(0, 0, 0, 0)
+        opaque = QColor(0, 0, 0, 255)
+        if edge == "left":
+            gradient = QLinearGradient(0, 0, feather, 0)
+            gradient.setColorAt(0, transparent)
+            gradient.setColorAt(1, opaque)
+            painter.fillRect(0, 0, feather, height, gradient)
+        elif edge == "right":
+            gradient = QLinearGradient(width - feather, 0, width, 0)
+            gradient.setColorAt(0, opaque)
+            gradient.setColorAt(1, transparent)
+            painter.fillRect(width - feather, 0, feather, height, gradient)
+        elif edge == "top":
+            gradient = QLinearGradient(0, 0, 0, feather)
+            gradient.setColorAt(0, transparent)
+            gradient.setColorAt(1, opaque)
+            painter.fillRect(0, 0, width, feather, gradient)
+        elif edge == "bottom":
+            gradient = QLinearGradient(0, height - feather, 0, height)
+            gradient.setColorAt(0, opaque)
+            gradient.setColorAt(1, transparent)
+            painter.fillRect(0, height - feather, width, feather, gradient)
 
     def _start_tilt_animation(self) -> None:
         if not self._animation_timer.isActive():
@@ -388,6 +460,7 @@ class PhotoCard(AnimatedFrame):
         self.setObjectName("PhotoCard")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedSize(PHOTO_CARD_WIDTH, PHOTO_CARD_HEIGHT)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 6)
         layout.setSpacing(2)
@@ -400,6 +473,7 @@ class PhotoCard(AnimatedFrame):
         self._position_delete_button()
         self.preview = StackedImagePreview(theme=theme)
         self.preview.setFixedHeight(PHOTO_CARD_PREVIEW_HEIGHT)
+        self.preview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         set_photo_pixmap(self.preview, photo, 220, 120)
         layout.addWidget(self.preview)
         self.title_label = QLabel(photo.title)
@@ -433,6 +507,15 @@ class PhotoCard(AnimatedFrame):
     def _position_delete_button(self) -> None:
         self.delete_button.move(self.width() - self.delete_button.width() - 12, 12)
         self.delete_button.raise_()
+
+    def set_grid_cell_size(self, width: int, height: int) -> None:
+        self.setFixedSize(max(1, width), max(1, height))
+        margins = self.layout().contentsMargins()
+        spacing = self.layout().spacing()
+        fixed_text_height = PHOTO_CARD_TITLE_HEIGHT + PHOTO_CARD_META_HEIGHT
+        preview_height = height - margins.top() - margins.bottom() - spacing * 2 - fixed_text_height
+        self.preview.setFixedHeight(max(48, preview_height))
+        self._position_delete_button()
 
     def _delete_photo(self) -> None:
         if self.delete_callback is not None:

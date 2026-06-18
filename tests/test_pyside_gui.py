@@ -9,7 +9,7 @@ from PIL import Image
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QCoreApplication, QPoint, QPointF, QEvent, Qt
-from PySide6.QtGui import QEnterEvent
+from PySide6.QtGui import QEnterEvent, QImage, QPainter
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QGraphicsDropShadowEffect, QLabel, QMessageBox, QPushButton
 
@@ -17,8 +17,6 @@ from pic_record_manager.gui import (
     BASE_FONT_POINT_SIZE,
     DETAIL_IMAGE_SLIDE_OFFSET,
     FONT_FAMILY,
-    PHOTO_CARD_HEIGHT,
-    PHOTO_CARD_WIDTH,
     TRANSITION_ANIMATION_MS,
     ArchiveWindow,
     PhotoCard,
@@ -36,6 +34,31 @@ class PySideGuiTest(unittest.TestCase):
 
             self.assertEqual("#0f172a", window.palette().window().color().name())
             self.assertEqual(4, len(window.albums))
+
+            window.close()
+
+    def test_window_uses_dimmed_theme_background_when_available(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            theme_dir = workspace / "Themes" / "Default"
+            theme_dir.mkdir(parents=True)
+            Image.new("RGB", (32, 32), "#f0d090").save(theme_dir / "BackGround.jpg", format="JPEG")
+            window = ArchiveWindow(workspace)
+            window.resize(360, 260)
+            window.show()
+            self.app.processEvents()
+
+            rendered = QImage(window.size(), QImage.Format.Format_ARGB32)
+            rendered.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(rendered)
+            window.render(painter, QPoint(0, 0))
+            painter.end()
+            background_pixel = rendered.pixelColor(300, 10)
+
+            self.assertGreater(background_pixel.red(), 80)
+            self.assertLess(background_pixel.red(), 220)
+            self.assertLess(background_pixel.green(), 190)
+            self.assertLess(background_pixel.blue(), 140)
 
             window.close()
 
@@ -302,34 +325,41 @@ class PySideGuiTest(unittest.TestCase):
 
             window.close()
 
-    def test_preview_grid_is_fixed_three_columns_by_two_rows_with_centered_large_titles(self):
+    def test_preview_grid_is_fixed_three_by_three_without_scroll_and_resizes_with_window(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
             window = ArchiveWindow(workspace)
-            for index in range(6):
+            for index in range(9):
                 source = workspace / f"grid-{index}.jpg"
                 Image.new("RGB", (320, 180), f"#{40 + index:02x}88aa").save(source, format="JPEG")
-                window.store.import_photo(window.selected_album_id, source, title=f"固定卡片 {index + 1}")
+                window.store.import_photo(window.selected_album_id, source, title=f"Fixed card {index + 1}")
             window.refresh()
             window.resize(1180, 740)
             window.show()
             self.app.processEvents()
 
-            positions = [(row, column) for row in range(2) for column in range(3)]
+            positions = [(row, column) for row in range(3) for column in range(3)]
             titles = [window.content_grid.itemAtPosition(row, column).widget().photo.title for row, column in positions]
-            self.assertEqual([f"固定卡片 {index + 1}" for index in range(6)], titles)
+            self.assertEqual([f"Fixed card {index + 1}" for index in range(9)], titles)
+            initial_sizes = []
             for row, column in positions:
                 card = window.content_grid.itemAtPosition(row, column).widget()
-                self.assertEqual(PHOTO_CARD_WIDTH, card.minimumWidth())
-                self.assertEqual(PHOTO_CARD_WIDTH, card.maximumWidth())
-                self.assertEqual(PHOTO_CARD_HEIGHT, card.minimumHeight())
-                self.assertEqual(PHOTO_CARD_HEIGHT, card.maximumHeight())
+                initial_sizes.append(card.size())
                 self.assertEqual(Qt.AlignmentFlag.AlignCenter, card.title_label.alignment())
                 self.assertIn("QLabel#CardTitle", window.styleSheet())
                 self.assertIn("font-size: 18px", window.styleSheet())
-            self.assertEqual(0, window.content_grid.columnStretch(0))
-            self.assertEqual(0, window.content_grid.columnStretch(1))
-            self.assertEqual(0, window.content_grid.columnStretch(2))
+            self.assertEqual(1, len({(size.width(), size.height()) for size in initial_sizes}))
+            self.assertEqual(0, window.scroll.verticalScrollBar().maximum())
+            self.assertEqual(0, window.scroll.horizontalScrollBar().maximum())
+
+            window.resize(1380, 860)
+            self.app.processEvents()
+
+            grown_card = window.content_grid.itemAtPosition(0, 0).widget()
+            self.assertGreater(grown_card.width(), initial_sizes[0].width())
+            self.assertGreater(grown_card.height(), initial_sizes[0].height())
+            self.assertEqual(0, window.scroll.verticalScrollBar().maximum())
+            self.assertEqual(0, window.scroll.horizontalScrollBar().maximum())
 
             window.close()
 

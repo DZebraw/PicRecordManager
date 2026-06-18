@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QApplication
 
 from pic_record_manager.archive_store import Photo
 from pic_record_manager.gui import PHOTO_CARD_HEIGHT, StackedImagePreview, TiltImagePreview, PhotoCard
+from pic_record_manager.theme_assets import ThemeAssets
 
 
 class PhotoCardLayoutTest(unittest.TestCase):
@@ -105,6 +106,61 @@ class PhotoCardLayoutTest(unittest.TestCase):
 
         self.assertLess(abs(image_center_x - preview.width() / 2), 30)
         self.assertLess(abs(image_center_y - preview.height() / 2), 30)
+
+    def test_detail_preview_feathers_photo_edges_into_pic_ground(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ground_dir = Path(tmp) / "Themes" / "Default"
+            ground_dir.mkdir(parents=True)
+            ground = QPixmap(64, 64)
+            ground.fill(QColor("#20c060"))
+            self.assertTrue(ground.save(str(ground_dir / "PicGround.png")))
+
+            preview = TiltImagePreview(theme=ThemeAssets(Path(tmp)))
+            preview.resize(360, 360)
+            preview.setStyleSheet("background: #010203; border: none;")
+            pixmap = QPixmap(200, 200)
+            pixmap.fill(QColor("#cc2020"))
+            preview.set_preview_stack([pixmap])
+
+            rendered = QImage(preview.size(), QImage.Format.Format_ARGB32)
+            rendered.fill(QColor("#010203"))
+            painter = QPainter(rendered)
+            preview.render(painter, QPoint(0, 0))
+            painter.end()
+
+            center = rendered.pixelColor(180, 180)
+            edge = rendered.pixelColor(60, 180)
+
+            self.assertGreater(center.red(), 180)
+            self.assertLess(center.green(), 80)
+            self.assertGreater(edge.green(), center.green() + 20)
+            self.assertLess(edge.red(), center.red())
+
+    def test_detail_preview_stack_keeps_rear_images_inside_widget_bounds(self):
+        preview = TiltImagePreview()
+        preview.resize(520, 700)
+        preview.setStyleSheet("background: #010203; border: none;")
+        pixmaps = []
+        for color in ("#4488aa", "#aa8844", "#66aa44"):
+            pixmap = QPixmap(260, 340)
+            pixmap.fill(QColor(color))
+            pixmaps.append(pixmap)
+        preview.set_preview_stack(pixmaps)
+
+        background = QColor("#010203")
+        rendered = QImage(preview.size(), QImage.Format.Format_ARGB32)
+        rendered.fill(background)
+        painter = QPainter(rendered)
+        preview.render(painter, QPoint(0, 0))
+        painter.end()
+
+        right_edge_painted_pixels = 0
+        for y in range(rendered.height()):
+            for x in range(rendered.width() - 2, rendered.width()):
+                if rendered.pixelColor(x, y) != background:
+                    right_edge_painted_pixels += 1
+
+        self.assertEqual(0, right_edge_painted_pixels)
 
 
 if __name__ == "__main__":

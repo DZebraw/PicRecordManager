@@ -34,6 +34,9 @@ class ThemeAssets:
     def ground_pixmap(self) -> Path | None:
         return self.theme("PicGround.png")
 
+    def background_pixmap(self) -> Path | None:
+        return self.theme("BackGround.jpg")
+
     def shortcut(self, name: str) -> Path | None:
         return self.theme(Path("Shortcuts") / name)
 
