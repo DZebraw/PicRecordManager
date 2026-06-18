@@ -48,12 +48,14 @@ DETAIL_IMAGE_FINAL_SIZE = QSize(440, 420)
 DETAIL_IMAGE_SLIDE_OFFSET = 220
 
 COLOR_BG = "#0f172a"
-COLOR_SURFACE = "#111827"
-COLOR_SURFACE_2 = "#1f2937"
-COLOR_SURFACE_3 = "#273449"
+COLOR_BG_GRADIENT_START = "#1e293b"
+COLOR_BG_GRADIENT_END = "#0f172a"
+COLOR_SURFACE = "rgba(17, 24, 39, 0.7)"
+COLOR_SURFACE_2 = "rgba(31, 41, 55, 0.6)"
+COLOR_SURFACE_3 = "rgba(39, 52, 73, 0.5)"
 COLOR_TEXT = "#f8fafc"
 COLOR_MUTED = "#94a3b8"
-COLOR_BORDER = "#334155"
+COLOR_BORDER = "rgba(51, 65, 85, 0.5)"
 COLOR_PRIMARY = "#2563eb"
 COLOR_PRIMARY_HOVER = "#1d4ed8"
 COLOR_SUCCESS = "#059669"
@@ -1184,7 +1186,7 @@ def clear_layout(layout) -> None:
 
 APP_QSS = f"""
 QMainWindow, QWidget#ListPage, QWidget#DetailPage {{
-    background: {COLOR_BG};
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {COLOR_BG_GRADIENT_START}, stop:1 {COLOR_BG_GRADIENT_END});
     color: {COLOR_TEXT};
     font-family: {FONT_STACK};
     font-size: 15px;
@@ -1194,13 +1196,15 @@ QFrame#Sidebar, QFrame#Card, QFrame#PhotoCard {{
     background: {COLOR_SURFACE};
     border: 1px solid {COLOR_BORDER};
     border-radius: 12px;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
 }}
 QFrame#AlbumItem {{
     background: transparent;
     border: none;
 }}
 QFrame#MainPanel {{
-    background: {COLOR_BG};
+    background: transparent;
 }}
 QLabel {{
     color: {COLOR_TEXT};
@@ -1257,6 +1261,8 @@ QPushButton {{
     min-height: 22px;
     font-size: 14px;
     font-weight: 600;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
 }}
 QPushButton:hover {{
     background: {COLOR_SURFACE_3};

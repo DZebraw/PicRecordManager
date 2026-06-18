@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from endfielddoc.gui import main
+from pic_record_manager.gui import main
 
 
 if __name__ == "__main__":

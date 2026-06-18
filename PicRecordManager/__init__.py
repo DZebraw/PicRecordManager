@@ -1,2 +1,0 @@
-"""EndFieldDoc desktop archive manager."""
-
