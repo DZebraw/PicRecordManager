@@ -108,6 +108,7 @@ class StackedImagePreview(QWidget):
         self._empty_text = "空档案"
         self.stack_depth = 0
         self.scale_mode = Qt.AspectRatioMode.KeepAspectRatio
+        self._ground_pixmap = QPixmap("C:/Users/daiwei/Desktop/PicRecordManager/Themes/Default/PicGround.png")
 
     def set_preview_pixmaps(self, pixmaps: list[QPixmap], empty_text: str = "空档案") -> None:
         self._pixmaps = [pixmap for pixmap in pixmaps if not pixmap.isNull()]
@@ -150,9 +151,24 @@ class StackedImagePreview(QWidget):
         painter.translate(center)
         painter.rotate(rotation)
         target = QRectF(-scaled.width() / 2, -scaled.height() / 2, scaled.width(), scaled.height())
+        # 绘制阴影
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(2, 6, 23, 90))
         painter.drawRoundedRect(target.translated(0, 8), 10, 10)
+        # 绘制相纸背景图片
+        border_width = 18
+        border_rect = target.adjusted(-border_width, -border_width, border_width, border_width)
+        if not self._ground_pixmap.isNull():
+            ground_scaled = self._ground_pixmap.scaled(
+                border_rect.size().toSize(),
+                Qt.AspectRatioMode.IgnoreAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            painter.drawPixmap(border_rect, ground_scaled, QRectF(ground_scaled.rect()))
+        else:
+            painter.setBrush(QColor(255, 255, 255))
+            painter.drawRoundedRect(border_rect, 8, 8)
+        # 绘制图片
         painter.drawPixmap(target, scaled, QRectF(scaled.rect()))
         painter.restore()
 
@@ -179,6 +195,7 @@ class TiltImagePreview(QWidget):
         self._pixmap = QPixmap()
         self._stack_pixmaps: list[QPixmap] = []
         self._incoming_pixmap = QPixmap()
+        self._ground_pixmap = QPixmap("C:/Users/daiwei/Desktop/PicRecordManager/Themes/Default/PicGround.png")
         self.stack_depth = 0
         self.page_transition_active = False
         self.page_transition_direction = ""
@@ -306,10 +323,25 @@ class TiltImagePreview(QWidget):
         center = rect.center() - QPointF(self.width() / 2, self.height() / 2)
         painter.translate(center)
         painter.rotate(rotation)
+        # 绘制阴影
         shadow_rect = draw_rect.translated(0, 12)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(2, 6, 23, 90))
         painter.drawRoundedRect(shadow_rect, 18, 18)
+        # 绘制相纸背景图片
+        border_width = 24
+        border_rect = draw_rect.adjusted(-border_width, -border_width, border_width, border_width)
+        if not self._ground_pixmap.isNull():
+            ground_scaled = self._ground_pixmap.scaled(
+                border_rect.size().toSize(),
+                Qt.AspectRatioMode.IgnoreAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            painter.drawPixmap(border_rect, ground_scaled, QRectF(ground_scaled.rect()))
+        else:
+            painter.setBrush(QColor(255, 255, 255))
+            painter.drawRoundedRect(border_rect, 10, 10)
+        # 绘制图片
         painter.drawPixmap(draw_rect, scaled, QRectF(scaled.rect()))
         painter.restore()
 
