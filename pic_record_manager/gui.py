@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 
 from .archive_store import Album, ArchiveStore, Photo
 from .image_preview import load_preview_pixmap
+from .theme_assets import ThemeAssets
 
 
 APP_TITLE = "档案管理"
@@ -100,7 +101,7 @@ class AnimatedFrame(QFrame):
 
 
 class StackedImagePreview(QWidget):
-    def __init__(self, parent: QWidget | None = None):
+    def __init__(self, parent: QWidget | None = None, theme: ThemeAssets | None = None):
         super().__init__(parent)
         self.setObjectName("Preview")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -108,7 +109,8 @@ class StackedImagePreview(QWidget):
         self._empty_text = "空档案"
         self.stack_depth = 0
         self.scale_mode = Qt.AspectRatioMode.KeepAspectRatio
-        self._ground_pixmap = QPixmap("C:/Users/daiwei/Desktop/PicRecordManager/Themes/Default/PicGround.png")
+        ground_path = theme.ground_pixmap() if theme else None
+        self._ground_pixmap = QPixmap(str(ground_path)) if ground_path else QPixmap()
 
     def set_preview_pixmaps(self, pixmaps: list[QPixmap], empty_text: str = "空档案") -> None:
         self._pixmaps = [pixmap for pixmap in pixmaps if not pixmap.isNull()]
@@ -180,7 +182,7 @@ class TiltImagePreview(QWidget):
     MAX_TILT_Y = 12.0
     EASING = 0.18
 
-    def __init__(self, parent: QWidget | None = None):
+    def __init__(self, parent: QWidget | None = None, theme: ThemeAssets | None = None):
         super().__init__(parent)
         self.setObjectName("DetailImage")
         self.setMouseTracking(True)
@@ -195,7 +197,8 @@ class TiltImagePreview(QWidget):
         self._pixmap = QPixmap()
         self._stack_pixmaps: list[QPixmap] = []
         self._incoming_pixmap = QPixmap()
-        self._ground_pixmap = QPixmap("C:/Users/daiwei/Desktop/PicRecordManager/Themes/Default/PicGround.png")
+        ground_path = theme.ground_pixmap() if theme else None
+        self._ground_pixmap = QPixmap(str(ground_path)) if ground_path else QPixmap()
         self.stack_depth = 0
         self.page_transition_active = False
         self.page_transition_direction = ""
@@ -288,7 +291,6 @@ class TiltImagePreview(QWidget):
 
         painter.save()
         painter.translate(center)
-        painter.shear(self.current_tilt.y() / 85.0, self.current_tilt.x() / 95.0)
         painter.rotate(self.current_tilt.y() * 0.22)
         for index, pixmap in enumerate(reversed(self._stack_pixmaps), start=1):
             layer_rect = QRectF(available).translated(22 * index, -14 * index)
@@ -371,6 +373,7 @@ class ArchiveWindow(QMainWindow):
     def __init__(self, workspace: Path):
         super().__init__()
         self.workspace = workspace
+        self.theme = ThemeAssets(workspace)
         self.store = ArchiveStore(workspace / "data" / "archive.db", workspace / "data" / "media")
         self.albums: list[Album] = []
         self.selected_album_id: int | None = self.store.list_albums()[0].id
@@ -558,7 +561,7 @@ class ArchiveWindow(QMainWindow):
         for index, photo in enumerate(self.current_page.items[: PHOTO_GRID_COLUMNS * PHOTO_GRID_ROWS]):
             row, column = divmod(index, PHOTO_GRID_COLUMNS)
             self.content_grid.addWidget(
-                PhotoCard(photo, self.show_detail, self.delete_photo_from_grid),
+                PhotoCard(photo, self.show_detail, self.delete_photo_from_grid, theme=self.theme),
                 row,
                 column,
                 Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter,
@@ -600,7 +603,7 @@ class ArchiveWindow(QMainWindow):
         self.detail_prev_image_button.setFixedSize(44, 44)
         self.detail_prev_image_button.clicked.connect(self.previous_detail_image)
         image_view.addWidget(self.detail_prev_image_button, 0, Qt.AlignmentFlag.AlignVCenter)
-        self.detail_image = TiltImagePreview()
+        self.detail_image = TiltImagePreview(theme=self.theme)
         image_view.addWidget(self.detail_image, 1)
         self.detail_next_image_button = AnimatedButton(">")
         self.detail_next_image_button.setObjectName("ImageNavButton")
@@ -1076,7 +1079,7 @@ class AlbumItem(QFrame):
 
 
 class PhotoCard(AnimatedFrame):
-    def __init__(self, photo: Photo, open_callback, delete_callback=None):
+    def __init__(self, photo: Photo, open_callback, delete_callback=None, theme: ThemeAssets | None = None):
         super().__init__()
         self.photo = photo
         self.open_callback = open_callback
@@ -1094,7 +1097,7 @@ class PhotoCard(AnimatedFrame):
         self.delete_button.setFixedSize(26, 26)
         self.delete_button.clicked.connect(self._delete_photo)
         self._position_delete_button()
-        self.preview = StackedImagePreview()
+        self.preview = StackedImagePreview(theme=theme)
         self.preview.setFixedHeight(150)
         set_photo_pixmap(self.preview, photo, 250, 140)
         layout.addWidget(self.preview)

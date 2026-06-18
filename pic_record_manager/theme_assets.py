@@ -6,13 +6,17 @@ from pathlib import Path
 class ThemeAssets:
     """Resolve image assets copied from the XXMI launcher theme structure."""
 
-    PHOTOIMAGE_EXTENSIONS = {".png", ".gif"}
+    PHOTOIMAGE_EXTENSIONS = {".png", ".gif", ".jpg", ".jpeg", ".webp", ".ico"}
 
     def __init__(self, workspace: Path | str, theme_name: str = "Default"):
         self.workspace = Path(workspace)
         self.theme_name = theme_name
         self.root = self.workspace / "Themes" / theme_name
         self.launcher_root = self.root / "MainWindow" / "LauncherFrame"
+
+    def theme(self, relative_path: str | Path) -> Path | None:
+        path = self.root / relative_path
+        return path if path.is_file() else None
 
     def launcher(self, relative_path: str | Path) -> Path | None:
         path = self.launcher_root / relative_path
@@ -26,6 +30,15 @@ class ThemeAssets:
 
     def tool_bar(self, relative_path: str | Path) -> Path | None:
         return self.launcher(Path("ToolBarFrame") / relative_path)
+
+    def ground_pixmap(self) -> Path | None:
+        return self.theme("PicGround.png")
+
+    def shortcut(self, name: str) -> Path | None:
+        return self.theme(Path("Shortcuts") / name)
+
+    def font(self, name: str) -> Path | None:
+        return self.theme(Path("Fonts") / name)
 
     def available_launcher_images(self) -> list[Path]:
         if not self.launcher_root.is_dir():
