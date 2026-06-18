@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from endfielddoc.theme_assets import ThemeAssets
+from pic_record_manager.theme_assets import ThemeAssets
 
 
 class ThemeAssetsTest(unittest.TestCase):
@@ -29,11 +29,12 @@ class ThemeAssetsTest(unittest.TestCase):
             base = root / "Themes" / "Default" / "MainWindow" / "LauncherFrame"
             base.mkdir(parents=True)
             (base / "ok.png").write_bytes(b"png")
-            (base / "unsupported.webp").write_bytes(b"webp")
+            (base / "ok.webp").write_bytes(b"webp")
+            (base / "unsupported.txt").write_text("text", encoding="utf-8")
 
             theme = ThemeAssets(root)
 
-            self.assertEqual([base / "ok.png"], theme.available_launcher_images())
+            self.assertEqual([base / "ok.png", base / "ok.webp"], theme.available_launcher_images())
 
 
 if __name__ == "__main__":

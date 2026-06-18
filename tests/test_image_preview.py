@@ -9,7 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from endfielddoc.image_preview import load_preview_pixmap
+from pic_record_manager.image_preview import load_preview_pixmap
 
 
 class ImagePreviewTest(unittest.TestCase):

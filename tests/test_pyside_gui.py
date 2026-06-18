@@ -11,9 +11,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QCoreApplication, QPoint, QPointF, QEvent, Qt
 from PySide6.QtGui import QEnterEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QGraphicsDropShadowEffect, QLabel, QPushButton
+from PySide6.QtWidgets import QApplication, QGraphicsDropShadowEffect, QLabel, QMessageBox, QPushButton
 
-from endfielddoc.gui import (
+from pic_record_manager.gui import (
     BASE_FONT_POINT_SIZE,
     DETAIL_IMAGE_SLIDE_OFFSET,
     FONT_FAMILY,
@@ -233,11 +233,8 @@ class PySideGuiTest(unittest.TestCase):
             self.assertEqual(Qt.AlignmentFlag.AlignCenter, window.detail_record_label.alignment())
             self.assertFalse(hasattr(window, "detail_album"))
 
-            with patch(
-                "endfielddoc.gui.QFileDialog.getOpenFileNames",
-                return_value=([str(first), str(second)], ""),
-            ):
-                window.import_images_to_detail()
+            window.detail_images = window.store.add_photo_images(photo.id, [first, second])
+            window._refresh_detail_image()
 
             self.assertEqual(2, len(window.detail_images))
             self.assertEqual(2, window.detail_image.stack_depth)
@@ -394,10 +391,25 @@ class PySideGuiTest(unittest.TestCase):
             card = window.content_grid.itemAt(0).widget()
 
             self.assertEqual("PhotoDeleteButton", card.delete_button.objectName())
-            card.delete_button.click()
+            with patch(
+                "pic_record_manager.gui.QMessageBox.question",
+                return_value=QMessageBox.StandardButton.No,
+            ) as question:
+                card.delete_button.click()
+
+            question.assert_called_once()
+            self.assertEqual(photo.id, window.store.get_photo(photo.id).id)
+            self.assertEqual(1, window.current_page.total)
+
+            with patch(
+                "pic_record_manager.gui.QMessageBox.question",
+                return_value=QMessageBox.StandardButton.Yes,
+            ) as question:
+                card.delete_button.click()
 
             with self.assertRaises(KeyError):
                 window.store.get_photo(photo.id)
+            question.assert_called_once()
             self.assertEqual(0, window.current_page.total)
 
             window.close()
@@ -444,12 +456,98 @@ class PySideGuiTest(unittest.TestCase):
             album_item = next(item for item in window.album_item_widgets if item.album.id == album.id)
 
             self.assertEqual("AlbumDeleteButton", album_item.delete_button.objectName())
-            album_item.delete_button.click()
+            with patch(
+                "pic_record_manager.gui.QMessageBox.question",
+                return_value=QMessageBox.StandardButton.No,
+            ) as question:
+                album_item.delete_button.click()
+
+            question.assert_called_once()
+            self.assertIn(album.id, [item.id for item in window.store.list_albums()])
+            self.assertEqual(photo.id, window.store.get_photo(photo.id).id)
+
+            with patch(
+                "pic_record_manager.gui.QMessageBox.question",
+                return_value=QMessageBox.StandardButton.Yes,
+            ) as question:
+                album_item.delete_button.click()
 
             self.assertNotIn(album.id, [item.id for item in window.store.list_albums()])
             with self.assertRaises(KeyError):
                 window.store.get_photo(photo.id)
+            question.assert_called_once()
             self.assertNotEqual(album.id, window.selected_album_id)
+
+            window.close()
+
+    def test_detail_import_starts_worker_and_enters_busy_state(self):
+        class FakeSignal:
+            def __init__(self):
+                self.callbacks = []
+
+            def connect(self, callback):
+                self.callbacks.append(callback)
+
+        class FakeThread:
+            def __init__(self):
+                self.started = FakeSignal()
+                self.finished = FakeSignal()
+                self.started_called = False
+
+            def start(self):
+                self.started_called = True
+
+            def quit(self):
+                pass
+
+            def deleteLater(self):
+                pass
+
+        class FakeWorker:
+            instances = []
+
+            def __init__(self, database_path, media_dir, photo_id, source_paths):
+                self.database_path = database_path
+                self.media_dir = media_dir
+                self.photo_id = photo_id
+                self.source_paths = source_paths
+                self.finished = FakeSignal()
+                self.failed = FakeSignal()
+                FakeWorker.instances.append(self)
+
+            def moveToThread(self, thread):
+                self.thread = thread
+
+            def run(self):
+                pass
+
+            def deleteLater(self):
+                pass
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            source = workspace / "async.jpg"
+            Image.new("RGB", (320, 180), "#4488aa").save(source, format="JPEG")
+            window = ArchiveWindow(workspace)
+            photo = window.store.create_empty_photo(window.selected_album_id, title="Async")
+            window.show_detail(photo)
+
+            with patch(
+                "pic_record_manager.gui.QFileDialog.getOpenFileNames",
+                return_value=([str(source)], ""),
+            ), patch("pic_record_manager.gui.QThread", FakeThread), patch(
+                "pic_record_manager.gui.ImageImportWorker",
+                FakeWorker,
+            ):
+                window.import_images_to_detail()
+
+            self.assertEqual(1, len(FakeWorker.instances))
+            worker = FakeWorker.instances[0]
+            self.assertEqual(photo.id, worker.photo_id)
+            self.assertEqual([source], worker.source_paths)
+            self.assertFalse(window.detail_import_images_button.isEnabled())
+            self.assertIn("导入", window.status_label.text())
+            self.assertTrue(window.image_import_thread.started_called)
 
             window.close()
 

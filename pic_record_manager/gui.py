@@ -3,14 +3,13 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QEasingCurve, QEvent, QPoint, QPointF, QParallelAnimationGroup, QPropertyAnimation, QRectF, QSize, QTimer, Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QPalette, QPixmap
+from PySide6.QtCore import QEasingCurve, QEvent, QPoint, QParallelAnimationGroup, QPropertyAnimation, QThread, QSize, Qt
+from PySide6.QtGui import QColor, QFont, QPalette, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QFileDialog,
     QFrame,
-    QGraphicsDropShadowEffect,
     QGraphicsOpacityEffect,
     QGridLayout,
     QHBoxLayout,
@@ -20,350 +19,59 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
-    QSizePolicy,
     QStackedWidget,
-    QStyle,
-    QStyleOption,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
 from .archive_store import Album, ArchiveStore, Photo
+from .import_worker import ImageImportWorker
 from .image_preview import load_preview_pixmap
 from .theme_assets import ThemeAssets
-
-
-APP_TITLE = "档案管理"
-WINDOW_SIZE = (1180, 740)
-SIDEBAR_WIDTH = 220
-PHOTO_GRID_COLUMNS = 3
-PHOTO_GRID_ROWS = 2
-PHOTO_CARD_WIDTH = 280
-PHOTO_CARD_HEIGHT = 250
-FONT_FAMILY = "Microsoft YaHei UI"
-FONT_STACK = '"Microsoft YaHei UI", "Segoe UI Variable", "Segoe UI"'
-BASE_FONT_POINT_SIZE = 11
-TRANSITION_ANIMATION_MS = 460
-DETAIL_IMAGE_FINAL_SIZE = QSize(440, 420)
-DETAIL_IMAGE_SLIDE_OFFSET = 220
-
-COLOR_BG = "#0f172a"
-COLOR_BG_GRADIENT_START = "#1e293b"
-COLOR_BG_GRADIENT_END = "#0f172a"
-COLOR_SURFACE = "rgba(17, 24, 39, 0.7)"
-COLOR_SURFACE_2 = "rgba(31, 41, 55, 0.6)"
-COLOR_SURFACE_3 = "rgba(39, 52, 73, 0.5)"
-COLOR_TEXT = "#f8fafc"
-COLOR_MUTED = "#94a3b8"
-COLOR_BORDER = "rgba(51, 65, 85, 0.5)"
-COLOR_PRIMARY = "#2563eb"
-COLOR_PRIMARY_HOVER = "#1d4ed8"
-COLOR_SUCCESS = "#059669"
-COLOR_SUCCESS_HOVER = "#047857"
-COLOR_DANGER = "#dc2626"
-
-
-def apply_preview_glow(widget: QWidget) -> None:
-    effect = QGraphicsDropShadowEffect(widget)
-    effect.setBlurRadius(0)
-    effect.setOffset(0, 0)
-    effect.setColor(QColor(59, 130, 246, 145))
-    widget.setGraphicsEffect(effect)
-    widget.setProperty("previewGlow", False)
-    widget.setProperty("interactiveMotion", False)
-
-
-class AnimatedButton(QPushButton):
-    def __init__(self, text: str = "", parent: QWidget | None = None):
-        super().__init__(text, parent)
-        self.setProperty("interactiveMotion", False)
-
-
-class AnimatedFrame(QFrame):
-    def __init__(self, parent: QWidget | None = None):
-        super().__init__(parent)
-        apply_preview_glow(self)
-
-    def enterEvent(self, event) -> None:
-        effect = self.graphicsEffect()
-        if isinstance(effect, QGraphicsDropShadowEffect):
-            effect.setBlurRadius(36)
-        self.setProperty("previewGlow", True)
-        super().enterEvent(event)
-
-    def leaveEvent(self, event) -> None:
-        effect = self.graphicsEffect()
-        if isinstance(effect, QGraphicsDropShadowEffect):
-            effect.setBlurRadius(0)
-        self.setProperty("previewGlow", False)
-        super().leaveEvent(event)
-
-
-class StackedImagePreview(QWidget):
-    def __init__(self, parent: QWidget | None = None, theme: ThemeAssets | None = None):
-        super().__init__(parent)
-        self.setObjectName("Preview")
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self._pixmaps: list[QPixmap] = []
-        self._empty_text = "空档案"
-        self.stack_depth = 0
-        self.scale_mode = Qt.AspectRatioMode.KeepAspectRatio
-        ground_path = theme.ground_pixmap() if theme else None
-        self._ground_pixmap = QPixmap(str(ground_path)) if ground_path else QPixmap()
-
-    def set_preview_pixmaps(self, pixmaps: list[QPixmap], empty_text: str = "空档案") -> None:
-        self._pixmaps = [pixmap for pixmap in pixmaps if not pixmap.isNull()]
-        self._empty_text = empty_text
-        self.stack_depth = len(self._pixmaps)
-        self.update()
-
-    def text(self) -> str:
-        return self._empty_text if not self._pixmaps else ""
-
-    def paintEvent(self, event) -> None:
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-        option = QStyleOption()
-        option.initFrom(self)
-        self.style().drawPrimitive(QStyle.PrimitiveElement.PE_Widget, option, painter, self)
-
-        if not self._pixmaps:
-            painter.setPen(QColor(COLOR_MUTED))
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self._empty_text)
-            return
-
-        available = self.rect().adjusted(14, 10, -14, -10)
-        if len(self._pixmaps) > 1:
-            self._draw_layer(painter, self._pixmaps[1], available.translated(12, -7), opacity=0.55, rotation=2.6)
-        if len(self._pixmaps) > 2:
-            self._draw_layer(painter, self._pixmaps[2], available.translated(20, -13), opacity=0.32, rotation=4.8)
-        self._draw_layer(painter, self._pixmaps[0], available, opacity=1.0, rotation=0.0)
-
-    def _draw_layer(self, painter: QPainter, pixmap: QPixmap, rect, *, opacity: float, rotation: float) -> None:
-        scaled = pixmap.scaled(
-            rect.size(),
-            self.scale_mode,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        painter.save()
-        painter.setOpacity(opacity)
-        center = QRectF(rect).center()
-        painter.translate(center)
-        painter.rotate(rotation)
-        target = QRectF(-scaled.width() / 2, -scaled.height() / 2, scaled.width(), scaled.height())
-        # 绘制阴影
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(2, 6, 23, 90))
-        painter.drawRoundedRect(target.translated(0, 8), 10, 10)
-        # 绘制相纸背景图片
-        border_width = 18
-        border_rect = target.adjusted(-border_width, -border_width, border_width, border_width)
-        if not self._ground_pixmap.isNull():
-            ground_scaled = self._ground_pixmap.scaled(
-                border_rect.size().toSize(),
-                Qt.AspectRatioMode.IgnoreAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            painter.drawPixmap(border_rect, ground_scaled, QRectF(ground_scaled.rect()))
-        else:
-            painter.setBrush(QColor(255, 255, 255))
-            painter.drawRoundedRect(border_rect, 8, 8)
-        # 绘制图片
-        painter.drawPixmap(target, scaled, QRectF(scaled.rect()))
-        painter.restore()
-
-
-class TiltImagePreview(QWidget):
-    MAX_OFFSET_X = 22.0
-    MAX_OFFSET_Y = 16.0
-    MAX_TILT_X = 9.0
-    MAX_TILT_Y = 12.0
-    EASING = 0.18
-
-    def __init__(self, parent: QWidget | None = None, theme: ThemeAssets | None = None):
-        super().__init__(parent)
-        self.setObjectName("DetailImage")
-        self.setMouseTracking(True)
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setMinimumSize(DETAIL_IMAGE_FINAL_SIZE)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.tilt_motion_enabled = True
-        self.target_offset = QPointF(0, 0)
-        self.current_offset = QPointF(0, 0)
-        self.target_tilt = QPointF(0, 0)
-        self.current_tilt = QPointF(0, 0)
-        self._pixmap = QPixmap()
-        self._stack_pixmaps: list[QPixmap] = []
-        self._incoming_pixmap = QPixmap()
-        ground_path = theme.ground_pixmap() if theme else None
-        self._ground_pixmap = QPixmap(str(ground_path)) if ground_path else QPixmap()
-        self.stack_depth = 0
-        self.page_transition_active = False
-        self.page_transition_direction = ""
-        self.page_transition_progress = 1.0
-        self._empty_text = "无法预览此图片"
-        self._animation_timer = QTimer(self)
-        self._animation_timer.setInterval(16)
-        self._animation_timer.timeout.connect(self.advance_tilt_frame)
-        self._page_transition_timer = QTimer(self)
-        self._page_transition_timer.setInterval(16)
-        self._page_transition_timer.timeout.connect(self.advance_page_transition_frame)
-
-    def set_preview_pixmap(self, pixmap: QPixmap) -> None:
-        self.set_preview_stack([pixmap] if not pixmap.isNull() else [])
-
-    def set_preview_stack(self, pixmaps: list[QPixmap], *, animate: bool = False, direction: str = "next") -> None:
-        clean_pixmaps = [pixmap for pixmap in pixmaps if not pixmap.isNull()]
-        next_front = clean_pixmaps[0] if clean_pixmaps else QPixmap()
-        if animate and not self._pixmap.isNull() and not next_front.isNull():
-            self._incoming_pixmap = next_front
-            self.page_transition_active = True
-            self.page_transition_direction = direction
-            self.page_transition_progress = 0.0
-            self._page_transition_timer.start()
-        else:
-            self._incoming_pixmap = QPixmap()
-            self.page_transition_active = False
-            self.page_transition_direction = direction if animate else ""
-            self.page_transition_progress = 1.0
-            self._pixmap = next_front
-        self._stack_pixmaps = clean_pixmaps[1:3]
-        self.stack_depth = len(clean_pixmaps)
-        self.update()
-
-    def set_empty_text(self, text: str) -> None:
-        self._empty_text = text
-        self.update()
-
-    def mouseMoveEvent(self, event) -> None:
-        if self.width() <= 0 or self.height() <= 0:
-            return super().mouseMoveEvent(event)
-        position = event.position()
-        normalized_x = max(-1.0, min(1.0, (position.x() / self.width() - 0.5) * 2.0))
-        normalized_y = max(-1.0, min(1.0, (position.y() / self.height() - 0.5) * 2.0))
-        self.target_offset = QPointF(normalized_x * self.MAX_OFFSET_X, normalized_y * self.MAX_OFFSET_Y)
-        self.target_tilt = QPointF(-normalized_y * self.MAX_TILT_X, normalized_x * self.MAX_TILT_Y)
-        self._start_tilt_animation()
-        return super().mouseMoveEvent(event)
-
-    def leaveEvent(self, event) -> None:
-        self.target_offset = QPointF(0, 0)
-        self.target_tilt = QPointF(0, 0)
-        self._start_tilt_animation()
-        return super().leaveEvent(event)
-
-    def advance_tilt_frame(self) -> None:
-        self.current_offset = self._ease_point(self.current_offset, self.target_offset)
-        self.current_tilt = self._ease_point(self.current_tilt, self.target_tilt)
-        self.update()
-        if self._is_settled():
-            self.current_offset = QPointF(self.target_offset)
-            self.current_tilt = QPointF(self.target_tilt)
-            self._animation_timer.stop()
-
-    def advance_page_transition_frame(self) -> None:
-        self.page_transition_progress = min(1.0, self.page_transition_progress + 0.08)
-        if self.page_transition_progress >= 1.0:
-            if not self._incoming_pixmap.isNull():
-                self._pixmap = self._incoming_pixmap
-            self._incoming_pixmap = QPixmap()
-            self.page_transition_active = False
-            self._page_transition_timer.stop()
-        self.update()
-
-    def paintEvent(self, event) -> None:
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-        option = QStyleOption()
-        option.initFrom(self)
-        self.style().drawPrimitive(QStyle.PrimitiveElement.PE_Widget, option, painter, self)
-
-        if self._pixmap.isNull():
-            painter.setPen(QColor(COLOR_MUTED))
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self._empty_text)
-            return
-
-        available = self.rect().adjusted(32, 32, -32, -32)
-        center = QPointF(self.width() / 2, self.height() / 2) + self.current_offset
-
-        painter.save()
-        painter.translate(center)
-        painter.rotate(self.current_tilt.y() * 0.22)
-        for index, pixmap in enumerate(reversed(self._stack_pixmaps), start=1):
-            layer_rect = QRectF(available).translated(22 * index, -14 * index)
-            self._draw_pixmap_layer(painter, pixmap, layer_rect, opacity=max(0.35, 0.62 - index * 0.14), rotation=2.8 * index)
-        if self.page_transition_active and not self._incoming_pixmap.isNull():
-            direction = 1 if self.page_transition_direction == "next" else -1
-            progress = self.page_transition_progress
-            outgoing_rect = QRectF(available).translated(-direction * progress * 90, progress * 16)
-            incoming_rect = QRectF(available).translated(direction * (1.0 - progress) * 90, -(1.0 - progress) * 10)
-            self._draw_pixmap_layer(painter, self._pixmap, outgoing_rect, opacity=1.0 - progress * 0.72, rotation=-direction * progress * 8)
-            self._draw_pixmap_layer(painter, self._incoming_pixmap, incoming_rect, opacity=0.35 + progress * 0.65, rotation=direction * (1.0 - progress) * 8)
-        else:
-            self._draw_pixmap_layer(painter, self._pixmap, QRectF(available), opacity=1.0, rotation=0.0)
-        painter.restore()
-
-    def _draw_pixmap_layer(self, painter: QPainter, pixmap: QPixmap, rect: QRectF, *, opacity: float, rotation: float) -> None:
-        if pixmap.isNull():
-            return
-        scaled = pixmap.scaled(
-            rect.size().toSize(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        draw_rect = QRectF(
-            -scaled.width() / 2,
-            -scaled.height() / 2,
-            scaled.width(),
-            scaled.height(),
-        )
-        painter.save()
-        painter.setOpacity(opacity)
-        center = rect.center() - QPointF(self.width() / 2, self.height() / 2)
-        painter.translate(center)
-        painter.rotate(rotation)
-        # 绘制阴影
-        shadow_rect = draw_rect.translated(0, 12)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(2, 6, 23, 90))
-        painter.drawRoundedRect(shadow_rect, 18, 18)
-        # 绘制相纸背景图片
-        border_width = 24
-        border_rect = draw_rect.adjusted(-border_width, -border_width, border_width, border_width)
-        if not self._ground_pixmap.isNull():
-            ground_scaled = self._ground_pixmap.scaled(
-                border_rect.size().toSize(),
-                Qt.AspectRatioMode.IgnoreAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-            painter.drawPixmap(border_rect, ground_scaled, QRectF(ground_scaled.rect()))
-        else:
-            painter.setBrush(QColor(255, 255, 255))
-            painter.drawRoundedRect(border_rect, 10, 10)
-        # 绘制图片
-        painter.drawPixmap(draw_rect, scaled, QRectF(scaled.rect()))
-        painter.restore()
-
-    def _start_tilt_animation(self) -> None:
-        if not self._animation_timer.isActive():
-            self._animation_timer.start()
-
-    def _is_settled(self) -> bool:
-        return (
-            abs(self.current_offset.x() - self.target_offset.x()) < 0.12
-            and abs(self.current_offset.y() - self.target_offset.y()) < 0.12
-            and abs(self.current_tilt.x() - self.target_tilt.x()) < 0.08
-            and abs(self.current_tilt.y() - self.target_tilt.y()) < 0.08
-        )
-
-    def _ease_point(self, current: QPointF, target: QPointF) -> QPointF:
-        return QPointF(
-            current.x() + (target.x() - current.x()) * self.EASING,
-            current.y() + (target.y() - current.y()) * self.EASING,
-        )
+from .ui_constants import (
+    APP_TITLE,
+    BASE_FONT_POINT_SIZE,
+    COLOR_BG,
+    COLOR_BG_GRADIENT_END,
+    COLOR_BG_GRADIENT_START,
+    COLOR_BORDER,
+    COLOR_DANGER,
+    COLOR_MUTED,
+    COLOR_PRIMARY,
+    COLOR_PRIMARY_HOVER,
+    COLOR_SUCCESS,
+    COLOR_SUCCESS_HOVER,
+    COLOR_SURFACE,
+    COLOR_SURFACE_2,
+    COLOR_SURFACE_3,
+    COLOR_TEXT,
+    DETAIL_IMAGE_FINAL_SIZE,
+    DETAIL_IMAGE_SLIDE_OFFSET,
+    FONT_FAMILY,
+    FONT_STACK,
+    PHOTO_CARD_HEIGHT,
+    PHOTO_CARD_META_HEIGHT,
+    PHOTO_CARD_PREVIEW_HEIGHT,
+    PHOTO_CARD_TITLE_HEIGHT,
+    PHOTO_CARD_WIDTH,
+    PHOTO_GRID_COLUMNS,
+    PHOTO_GRID_ROWS,
+    SIDEBAR_WIDTH,
+    TRANSITION_ANIMATION_MS,
+    WINDOW_SIZE,
+)
+from .ui_widgets import (
+    AlbumItem,
+    AnimatedButton,
+    AnimatedFrame,
+    PhotoCard,
+    PhotoRow,
+    StackedImagePreview,
+    TiltImagePreview,
+    photo_meta_text,
+    set_photo_pixmap,
+)
 
 
 class ArchiveWindow(QMainWindow):
@@ -384,6 +92,10 @@ class ArchiveWindow(QMainWindow):
         self.current_page = None
         self.detail_photo_id: int | None = None
         self.album_item_widgets: list[AlbumItem] = []
+        self.image_import_thread: QThread | None = None
+        self.image_import_worker: ImageImportWorker | None = None
+        self._pending_import_photo_id: int | None = None
+        self._status_before_import = ""
         self._drag_offset: QPoint | None = None
         self.last_transition_direction: str | None = None
         self.detail_transition_animation: QParallelAnimationGroup | None = None
@@ -576,8 +288,8 @@ class ArchiveWindow(QMainWindow):
         self.detail_page = QWidget()
         self.detail_page.setObjectName("DetailPage")
         layout = QVBoxLayout(self.detail_page)
-        layout.setContentsMargins(24, 20, 24, 20)
-        layout.setSpacing(16)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
         top_bar = QHBoxLayout()
         back_button = AnimatedButton("← 返回")
@@ -591,9 +303,9 @@ class ArchiveWindow(QMainWindow):
         split.setSpacing(18)
 
         self.detail_image_panel = QFrame()
-        self.detail_image_panel.setObjectName("Card")
         image_layout = QVBoxLayout(self.detail_image_panel)
-        image_layout.setSpacing(10)
+        image_layout.setContentsMargins(0, 0, 0, 0)
+        image_layout.setSpacing(0)
         image_view = QHBoxLayout()
         image_view.setSpacing(10)
         self.detail_prev_image_button = AnimatedButton("<")
@@ -689,6 +401,8 @@ class ArchiveWindow(QMainWindow):
     def import_images_to_detail(self) -> None:
         if self.detail_photo_id is None:
             return
+        if self.image_import_thread is not None:
+            return
         files, _ = QFileDialog.getOpenFileNames(
             self,
             "选择档案图片",
@@ -698,10 +412,68 @@ class ArchiveWindow(QMainWindow):
         if not files:
             return
         self._save_current_image_record()
+        self._start_image_import(self.detail_photo_id, [Path(filename) for filename in files])
+
+    def _start_image_import(self, photo_id: int, source_paths: list[Path]) -> None:
+        self._pending_import_photo_id = photo_id
+        self._status_before_import = self.status_label.text()
+        self._set_detail_import_busy(True)
+        self.image_import_thread = QThread()
+        self.image_import_worker = ImageImportWorker(
+            self.store.database_path,
+            self.store.media_dir,
+            photo_id,
+            source_paths,
+        )
+        thread = self.image_import_thread
+        worker = self.image_import_worker
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(lambda *_args, thread=thread: thread.quit())
+        worker.failed.connect(lambda *_args, thread=thread: thread.quit())
+        worker.finished.connect(self._on_image_import_finished)
+        worker.failed.connect(self._on_image_import_failed)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+
+    def _set_detail_import_busy(self, busy: bool) -> None:
+        if hasattr(self, "detail_import_images_button"):
+            self.detail_import_images_button.setEnabled(not busy)
+        if hasattr(self, "detail_prev_image_button"):
+            self.detail_prev_image_button.setEnabled(False if busy else len(self.detail_images) > 1)
+        if hasattr(self, "detail_next_image_button"):
+            self.detail_next_image_button.setEnabled(False if busy else len(self.detail_images) > 1)
+        if busy:
+            self.status_label.setText("正在导入图片...")
+        elif self._status_before_import:
+            self.status_label.setText(self._status_before_import)
+
+    def _on_image_import_finished(self, photo_id: int, images: list) -> None:
+        stale_detail = self.detail_photo_id != photo_id
+        self._cleanup_image_import_state()
+        if stale_detail:
+            self.refresh()
+            return
         was_empty = not self.detail_images
-        self.detail_images = self.store.add_photo_images(self.detail_photo_id, [Path(filename) for filename in files])
+        self.detail_images = images
         self.detail_image_index = 0 if was_empty else min(self.detail_image_index, len(self.detail_images) - 1)
         self._refresh_detail_image()
+        self.status_label.setText(f"已导入 {len(images)} 张图片")
+
+    def _on_image_import_failed(self, photo_id: int, message: str) -> None:
+        stale_detail = self.detail_photo_id != photo_id
+        self._cleanup_image_import_state()
+        if stale_detail:
+            self.refresh()
+            return
+        QMessageBox.warning(self, "导入图片失败", message)
+
+    def _cleanup_image_import_state(self) -> None:
+        self._pending_import_photo_id = None
+        self._set_detail_import_busy(False)
+        self.image_import_worker = None
+        self.image_import_thread = None
 
     def previous_detail_image(self) -> None:
         total = len(self.detail_images)
@@ -777,16 +549,33 @@ class ArchiveWindow(QMainWindow):
         self.refresh()
 
     def delete_photo_from_grid(self, photo_id: int) -> None:
+        photo = self.store.get_photo(photo_id)
+        if not self._confirm_delete("删除照片", f"删除照片「{photo.title}」后无法撤销，确定删除吗？"):
+            return
         self.store.delete_photo(photo_id)
         self.refresh()
 
     def delete_album_from_sidebar(self, album_id: int) -> None:
+        album = next((item for item in self.store.list_albums() if item.id == album_id), None)
+        album_name = album.name if album is not None else str(album_id)
+        if not self._confirm_delete("删除书签", f"删除书签「{album_name}」会同时删除其中所有档案和图片，确定删除吗？"):
+            return
         self.store.delete_album(album_id)
         remaining_albums = self.store.list_albums()
         if self.selected_album_id == album_id:
             self.selected_album_id = remaining_albums[0].id if remaining_albums else None
         self.page = 1
         self.refresh()
+
+    def _confirm_delete(self, title: str, message: str) -> bool:
+        result = QMessageBox.question(
+            self,
+            title,
+            message,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return result == QMessageBox.StandardButton.Yes
 
     def rename_album_from_sidebar(self, album_id: int, name: str) -> None:
         self.store.rename_album(album_id, name)
@@ -1013,200 +802,6 @@ class ArchiveWindow(QMainWindow):
         return 0 <= window_position.y() <= self.DRAG_REGION_HEIGHT
 
 
-class AlbumItem(QFrame):
-    def __init__(self, album: Album, index: int, selected: bool, select_callback, delete_callback, rename_callback):
-        super().__init__()
-        self.album = album
-        self.select_callback = select_callback
-        self.delete_callback = delete_callback
-        self.rename_callback = rename_callback
-        self.setObjectName("AlbumItem")
-        self.setFixedWidth(SIDEBAR_WIDTH - 36)
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        self.select_button = AnimatedButton(f"{index}. {album.name}")
-        self.select_button.setObjectName("SelectedAlbumButton" if selected else "AlbumButton")
-        self.select_button.setFixedWidth(SIDEBAR_WIDTH - 36)
-        self.select_button.clicked.connect(lambda _checked=False: self.select_callback(self.album.id))
-        self.select_button.installEventFilter(self)
-        layout.addWidget(self.select_button, 1)
-
-        self.rename_editor = QLineEdit(self)
-        self.rename_editor.setObjectName("AlbumRenameEditor")
-        self.rename_editor.setText(album.name)
-        self.rename_editor.hide()
-        self.rename_editor.returnPressed.connect(self.commit_rename)
-        self.rename_editor.editingFinished.connect(self.commit_rename)
-
-        self.delete_button = AnimatedButton("×", self)
-        self.delete_button.setObjectName("AlbumDeleteButton")
-        self.delete_button.setAccessibleName(f"删除书签 {album.name}")
-        self.delete_button.setToolTip("删除书签")
-        self.delete_button.setFixedSize(24, 24)
-        self.delete_button.clicked.connect(lambda _checked=False: self.delete_callback(self.album.id))
-        self._position_delete_button()
-
-    def eventFilter(self, watched, event) -> bool:
-        if watched is self.select_button and event.type() == QEvent.Type.MouseButtonDblClick:
-            self.begin_rename()
-            return True
-        return super().eventFilter(watched, event)
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._position_delete_button()
-
-    def _position_delete_button(self) -> None:
-        self.delete_button.move(self.width() - self.delete_button.width() - 5, 5)
-        self.delete_button.raise_()
-        self.rename_editor.setGeometry(self.select_button.geometry())
-
-    def begin_rename(self) -> None:
-        self.rename_editor.setText(self.album.name)
-        self.rename_editor.setGeometry(self.select_button.geometry())
-        self.rename_editor.show()
-        self.rename_editor.raise_()
-        self.rename_editor.setFocus(Qt.FocusReason.MouseFocusReason)
-        self.rename_editor.selectAll()
-
-    def commit_rename(self) -> None:
-        if not self.rename_editor.isVisible():
-            return
-        self.rename_editor.hide()
-        self.rename_callback(self.album.id, self.rename_editor.text())
-
-
-class PhotoCard(AnimatedFrame):
-    def __init__(self, photo: Photo, open_callback, delete_callback=None, theme: ThemeAssets | None = None):
-        super().__init__()
-        self.photo = photo
-        self.open_callback = open_callback
-        self.delete_callback = delete_callback
-        self.setObjectName("PhotoCard")
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFixedSize(PHOTO_CARD_WIDTH, PHOTO_CARD_HEIGHT)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 12)
-        layout.setSpacing(12)
-        self.delete_button = AnimatedButton("×", self)
-        self.delete_button.setObjectName("PhotoDeleteButton")
-        self.delete_button.setAccessibleName(f"删除照片 {photo.title}")
-        self.delete_button.setToolTip("删除照片")
-        self.delete_button.setFixedSize(26, 26)
-        self.delete_button.clicked.connect(self._delete_photo)
-        self._position_delete_button()
-        self.preview = StackedImagePreview(theme=theme)
-        self.preview.setFixedHeight(150)
-        set_photo_pixmap(self.preview, photo, 250, 140)
-        layout.addWidget(self.preview)
-        self.title_label = QLabel(photo.title)
-        self.title_label.setObjectName("CardTitle")
-        self.title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.title_label.setWordWrap(True)
-        title_font = QFont(FONT_FAMILY, BASE_FONT_POINT_SIZE + 3)
-        title_font.setBold(True)
-        self.title_label.setFont(title_font)
-        layout.addWidget(self.title_label)
-        self.meta_label = QLabel(photo_meta_text(photo))
-        self.meta_label.setObjectName("CardMetaText")
-        self.meta_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self.meta_label)
-
-    def mousePressEvent(self, event):
-        super().mousePressEvent(event)
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.open_callback(self.photo)
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._position_delete_button()
-
-    def _position_delete_button(self) -> None:
-        self.delete_button.move(self.width() - self.delete_button.width() - 12, 12)
-        self.delete_button.raise_()
-
-    def _delete_photo(self) -> None:
-        if self.delete_callback is not None:
-            self.delete_callback(self.photo.id)
-
-
-class PhotoRow(AnimatedFrame):
-    def __init__(self, photo: Photo, open_callback, delete_callback=None):
-        super().__init__()
-        self.photo = photo
-        self.open_callback = open_callback
-        self.delete_callback = delete_callback
-        self.setObjectName("PhotoCard")
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        layout = QHBoxLayout(self)
-        preview = QLabel()
-        preview.setObjectName("Preview")
-        preview.setFixedSize(112, 72)
-        preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        set_photo_pixmap(preview, photo, 112, 72)
-        layout.addWidget(preview)
-        text = QVBoxLayout()
-        title = QLabel(photo.title)
-        title.setObjectName("CardTitle")
-        text.addWidget(title)
-        meta = QLabel(f"{photo.album_name} · {photo.original_name} · {photo.display_date}")
-        meta.setObjectName("MutedText")
-        text.addWidget(meta)
-        layout.addLayout(text, 1)
-        self.delete_button = AnimatedButton("×", self)
-        self.delete_button.setObjectName("PhotoDeleteButton")
-        self.delete_button.setAccessibleName(f"删除照片 {photo.title}")
-        self.delete_button.setToolTip("删除照片")
-        self.delete_button.setFixedSize(26, 26)
-        self.delete_button.clicked.connect(self._delete_photo)
-        self._position_delete_button()
-
-    def mousePressEvent(self, event):
-        super().mousePressEvent(event)
-        if event.button() == Qt.MouseButton.LeftButton:
-            self.open_callback(self.photo)
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._position_delete_button()
-
-    def _position_delete_button(self) -> None:
-        self.delete_button.move(self.width() - self.delete_button.width() - 12, 12)
-        self.delete_button.raise_()
-
-    def _delete_photo(self) -> None:
-        if self.delete_callback is not None:
-            self.delete_callback(self.photo.id)
-
-
-def set_photo_pixmap(label: QWidget, photo: Photo, width: int, height: int) -> None:
-    try:
-        pixmap = load_preview_pixmap(photo.stored_path, width, height)
-    except OSError:
-        pixmap = QPixmap()
-    if pixmap.isNull():
-        empty_text = "空档案" if photo.image_count == 0 else "图片"
-        if isinstance(label, StackedImagePreview):
-            label.set_preview_pixmaps([], empty_text=empty_text)
-        elif isinstance(label, QLabel):
-            label.setText(empty_text)
-    else:
-        if isinstance(label, StackedImagePreview):
-            pixmaps = [pixmap for _ in range(max(1, min(photo.image_count, 3)))]
-            label.set_preview_pixmaps(pixmaps)
-        elif isinstance(label, QLabel):
-            label.setText("")
-            label.setPixmap(pixmap)
-
-
-def photo_meta_text(photo: Photo) -> str:
-    if photo.display_date.strip():
-        return f"{photo.album_name} · {photo.display_date.strip()}"
-    return photo.album_name
-
-
 def clear_layout(layout) -> None:
     while layout.count():
         item = layout.takeAt(0)
@@ -1227,12 +822,16 @@ QMainWindow, QWidget#ListPage, QWidget#DetailPage {{
     font-size: 15px;
     font-weight: 400;
 }}
-QFrame#Sidebar, QFrame#Card, QFrame#PhotoCard {{
+QFrame#Sidebar {{
     background: {COLOR_SURFACE};
     border: 1px solid {COLOR_BORDER};
     border-radius: 12px;
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
+}}
+QFrame#PhotoCardContainer {{
+    background: transparent;
+    border: none;
 }}
 QFrame#AlbumItem {{
     background: transparent;
@@ -1262,8 +861,10 @@ QLabel#MutedText {{
 }}
 QLabel#CardMetaText {{
     color: {COLOR_MUTED};
-    font-size: 13px;
+    font-size: 9px;
     font-weight: 500;
+    margin: 0px;
+    padding: 0px;
 }}
 QLabel#SidebarTitle {{
     font-size: 16px;
@@ -1282,10 +883,9 @@ QLabel#EmptyText {{
     font-size: 15px;
     padding: 80px;
 }}
-QLabel#Preview, QWidget#Preview, QWidget#DetailImage {{
-    background: {COLOR_SURFACE_2};
-    border: 1px solid {COLOR_BORDER};
-    border-radius: 10px;
+QLabel#ImagePreview, QWidget#ImagePreview, QWidget#DetailImage {{
+    background: transparent;
+    border: none;
 }}
 QPushButton {{
     background: {COLOR_SURFACE_2};

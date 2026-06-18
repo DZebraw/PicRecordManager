@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from endfielddoc.archive_store import ArchiveStore
+from pic_record_manager.archive_store import ArchiveStore
 
 
 class ArchiveStoreTest(unittest.TestCase):
