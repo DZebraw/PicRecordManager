@@ -2,3 +2,9 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 data/
+Themes/
+*.png
+.DS_Store
+*.log
+.vscode/
+.idea/
