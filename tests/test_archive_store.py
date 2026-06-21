@@ -80,7 +80,7 @@ class ArchiveStoreTest(unittest.TestCase):
         self.assertEqual(["first page record", "second page record"], [image.record for image in updated_images])
         self.assertEqual(["multi image archive"], [item.title for item in self.store.search_photos("second page")])
 
-    def test_update_photo_saves_editable_display_date(self):
+    def test_update_photo_saves_editable_display_date_and_record_level(self):
         source = self.root / "date-source.png"
         source.write_bytes(b"fake image bytes")
         album_id = self.store.list_albums()[0].id
@@ -92,10 +92,13 @@ class ArchiveStoreTest(unittest.TestCase):
             description="备注",
             album_id=album_id,
             display_date="2026-06-17",
+            record_level="S",
         )
 
         self.assertEqual("2026-06-17", updated.display_date)
+        self.assertEqual("S", updated.record_level)
         self.assertEqual("2026-06-17", self.store.get_photo(photo.id).display_date)
+        self.assertEqual("S", self.store.get_photo(photo.id).record_level)
 
     def test_delete_album_removes_album_photos_and_media_files(self):
         source = self.root / "album-source.png"

@@ -37,6 +37,9 @@ class ThemeAssets:
     def background_pixmap(self) -> Path | None:
         return self.theme("BackGround.jpg")
 
+    def end_field_icon(self) -> Path | None:
+        return self.theme("EndField.ico")
+
     def shortcut(self, name: str) -> Path | None:
         return self.theme(Path("Shortcuts") / name)
 

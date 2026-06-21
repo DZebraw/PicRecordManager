@@ -28,6 +28,7 @@ class Photo:
     stored_path: Path
     created_at: str
     display_date: str
+    record_level: str = ""
     image_count: int = 0
 
 
@@ -120,10 +121,10 @@ class ArchiveStore:
             photo_id = int(cursor.lastrowid)
             conn.execute(
                 """
-                INSERT INTO photo_images (photo_id, original_name, stored_name, sort_order, record)
-                VALUES (?, ?, ?, 1, ?)
+                INSERT INTO photo_images (photo_id, original_name, stored_name, sort_order)
+                VALUES (?, ?, ?, 1)
                 """,
-                (photo_id, source.name, stored_name, description.strip()),
+                (photo_id, source.name, stored_name),
             )
         return self.get_photo(photo_id)
 
@@ -192,18 +193,30 @@ class ArchiveStore:
         description: str,
         album_id: int,
         display_date: str | None = None,
+        record_level: str | None = None,
     ) -> Photo:
         clean_title = title.strip() or "未命名档案"
+        clean_record_level = record_level.strip() if record_level is not None else None
         with self._connection() as conn:
-            if display_date is None:
+            if display_date is None and record_level is None:
                 conn.execute(
                     "UPDATE photos SET title = ?, description = ?, album_id = ? WHERE id = ?",
                     (clean_title, description.strip(), album_id, photo_id),
                 )
-            else:
+            elif display_date is None:
+                conn.execute(
+                    "UPDATE photos SET title = ?, description = ?, album_id = ?, record_level = ? WHERE id = ?",
+                    (clean_title, description.strip(), album_id, clean_record_level, photo_id),
+                )
+            elif record_level is None:
                 conn.execute(
                     "UPDATE photos SET title = ?, description = ?, album_id = ?, display_date = ? WHERE id = ?",
                     (clean_title, description.strip(), album_id, display_date.strip(), photo_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE photos SET title = ?, description = ?, album_id = ?, display_date = ?, record_level = ? WHERE id = ?",
+                    (clean_title, description.strip(), album_id, display_date.strip(), clean_record_level, photo_id),
                 )
         return self.get_photo(photo_id)
 
@@ -286,6 +299,7 @@ class ArchiveStore:
                 + """
                 WHERE photos.title LIKE ?
                    OR photos.description LIKE ?
+                   OR photos.record_level LIKE ?
                    OR albums.name LIKE ?
                    OR EXISTS (
                        SELECT 1 FROM photo_images
@@ -294,7 +308,7 @@ class ArchiveStore:
                    )
                 ORDER BY photos.id
                 """,
-                (needle, needle, needle, needle),
+                (needle, needle, needle, needle, needle),
             ).fetchall()
         return [self._row_to_photo(row) for row in rows]
 
@@ -357,7 +371,8 @@ class ArchiveStore:
                     original_name TEXT NOT NULL,
                     stored_name TEXT NOT NULL UNIQUE,
                     created_at TEXT NOT NULL,
-                    display_date TEXT NOT NULL DEFAULT ''
+                    display_date TEXT NOT NULL DEFAULT '',
+                    record_level TEXT NOT NULL DEFAULT ''
                 );
 
                 CREATE TABLE IF NOT EXISTS photo_images (
@@ -373,6 +388,8 @@ class ArchiveStore:
             columns = {row["name"] for row in conn.execute("PRAGMA table_info(photos)").fetchall()}
             if "display_date" not in columns:
                 conn.execute("ALTER TABLE photos ADD COLUMN display_date TEXT NOT NULL DEFAULT ''")
+            if "record_level" not in columns:
+                conn.execute("ALTER TABLE photos ADD COLUMN record_level TEXT NOT NULL DEFAULT ''")
             conn.execute("UPDATE photos SET display_date = created_at WHERE display_date = ''")
             image_columns = {row["name"] for row in conn.execute("PRAGMA table_info(photo_images)").fetchall()}
             if "record" not in image_columns:
@@ -428,6 +445,7 @@ class ArchiveStore:
                 """(
                     photos.title LIKE ?
                     OR photos.description LIKE ?
+                    OR photos.record_level LIKE ?
                     OR albums.name LIKE ?
                     OR EXISTS (
                         SELECT 1 FROM photo_images
@@ -437,7 +455,7 @@ class ArchiveStore:
                 )"""
             )
             needle = f"%{query.strip()}%"
-            params.extend([needle, needle, needle, needle])
+            params.extend([needle, needle, needle, needle, needle])
         if not clauses:
             return "", ()
         return " WHERE " + " AND ".join(clauses), tuple(params)
@@ -453,6 +471,7 @@ class ArchiveStore:
             stored_path=self.media_dir / row["stored_name"],
             created_at=row["created_at"],
             display_date=row["display_date"],
+            record_level=row["record_level"],
             image_count=row["image_count"],
         )
 
@@ -495,6 +514,7 @@ class ArchiveStore:
                 photos.stored_name,
                 photos.created_at,
                 photos.display_date,
+                photos.record_level,
                 (
                     SELECT COUNT(*)
                     FROM photo_images

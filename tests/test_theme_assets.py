@@ -23,6 +23,17 @@ class ThemeAssetsTest(unittest.TestCase):
 
             self.assertIsNone(theme.launcher("missing.png"))
 
+    def test_resolves_end_field_icon_from_default_theme_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            icon = root / "Themes" / "Default" / "EndField.ico"
+            icon.parent.mkdir(parents=True)
+            icon.write_bytes(b"ico")
+
+            theme = ThemeAssets(root)
+
+            self.assertEqual(icon, theme.end_field_icon())
+
     def test_lists_only_photoimage_supported_assets(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

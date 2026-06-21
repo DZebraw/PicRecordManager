@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from .archive_store import Album, Photo
-from .image_preview import load_preview_pixmap
+from .image_preview import load_media_preview_pixmap
 from .theme_assets import ThemeAssets
 from .ui_constants import (
     BASE_FONT_POINT_SIZE,
@@ -35,20 +35,35 @@ from .ui_constants import (
 )
 
 
-def apply_preview_glow(widget: QWidget) -> None:
+def apply_surface_shadow(widget: QWidget, *, blur_radius: int = 22, y_offset: int = 6, alpha: int = 80) -> None:
     effect = QGraphicsDropShadowEffect(widget)
-    effect.setBlurRadius(0)
-    effect.setOffset(0, 0)
-    effect.setColor(QColor(59, 130, 246, 145))
+    effect.setBlurRadius(blur_radius)
+    effect.setOffset(0, y_offset)
+    effect.setColor(QColor(56, 40, 12, alpha))
     widget.setGraphicsEffect(effect)
+
+
+def apply_preview_glow(widget: QWidget) -> None:
+    apply_surface_shadow(widget, blur_radius=24, y_offset=8, alpha=95)
     widget.setProperty("previewGlow", False)
     widget.setProperty("interactiveMotion", False)
+
+
+def apply_text_shadow(label: QLabel) -> None:
+    if not label.text().strip() or label.objectName() == "ImagePreview":
+        return
+    effect = QGraphicsDropShadowEffect(label)
+    effect.setBlurRadius(10)
+    effect.setOffset(0, 2)
+    effect.setColor(QColor(84, 58, 16, 105))
+    label.setGraphicsEffect(effect)
 
 
 class AnimatedButton(QPushButton):
     def __init__(self, text: str = "", parent: QWidget | None = None):
         super().__init__(text, parent)
         self.setProperty("interactiveMotion", False)
+        apply_surface_shadow(self, blur_radius=16, y_offset=4, alpha=70)
 
 
 class AnimatedFrame(QFrame):
@@ -60,18 +75,61 @@ class AnimatedFrame(QFrame):
         effect = self.graphicsEffect()
         if isinstance(effect, QGraphicsDropShadowEffect):
             effect.setBlurRadius(36)
+            effect.setYOffset(10)
         self.setProperty("previewGlow", True)
         super().enterEvent(event)
 
     def leaveEvent(self, event) -> None:
         effect = self.graphicsEffect()
         if isinstance(effect, QGraphicsDropShadowEffect):
-            effect.setBlurRadius(0)
+            effect.setBlurRadius(24)
+            effect.setYOffset(8)
         self.setProperty("previewGlow", False)
         super().leaveEvent(event)
 
 
+class OutlinedLabel(QLabel):
+    def __init__(self, text: str = "", parent: QWidget | None = None):
+        super().__init__(text, parent)
+        self.outline_color = QColor("#000000")
+        self.outline_width = 1
+        self.setProperty("textOutlineColor", self.outline_color.name())
+        self.setProperty("textOutlineWidth", self.outline_width)
+
+    def paintEvent(self, event) -> None:
+        text = self.text()
+        if not text:
+            return super().paintEvent(event)
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        flags = int(self.alignment())
+        if self.wordWrap():
+            flags |= int(Qt.TextFlag.TextWordWrap)
+
+        rect = self.contentsRect()
+        pen_color = self.palette().color(self.foregroundRole())
+        painter.setFont(self.font())
+        painter.setPen(self.outline_color)
+        for dx in range(-self.outline_width, self.outline_width + 1):
+            for dy in range(-self.outline_width, self.outline_width + 1):
+                if dx == 0 and dy == 0:
+                    continue
+                painter.drawText(rect.translated(dx, dy), flags, text)
+        painter.setPen(pen_color)
+        painter.drawText(rect, flags, text)
+
+
 class StackedImagePreview(QWidget):
+    STACK_OFFSET_1 = QPointF(12, 7)
+    STACK_OFFSET_2 = QPointF(20, 13)
+    LAYER_BORDER_WIDTH = 8
+    LAYER_SHADOW_OFFSET_Y = 8
+    EDGE_PADDING_LEFT = 14
+    EDGE_PADDING_TOP = 10
+    EDGE_PADDING_RIGHT = 42
+    EDGE_PADDING_BOTTOM = 38
+
     def __init__(self, parent: QWidget | None = None, theme: ThemeAssets | None = None):
         super().__init__(parent)
         self.setObjectName("ImagePreview")
@@ -90,7 +148,61 @@ class StackedImagePreview(QWidget):
         self.update()
 
     def text(self) -> str:
-        return self._empty_text if not self._pixmaps else ""
+        return self._empty_text if not self._render_pixmaps() else ""
+
+    def _render_pixmaps(self) -> list[QPixmap]:
+        if self._pixmaps:
+            return self._pixmaps
+        if not self._ground_pixmap.isNull():
+            return [self._ground_pixmap]
+        return []
+
+    def _available_rect(self) -> QRectF:
+        return QRectF(self.rect().adjusted(
+            self.EDGE_PADDING_LEFT,
+            self.EDGE_PADDING_TOP,
+            -self.EDGE_PADDING_RIGHT,
+            -self.EDGE_PADDING_BOTTOM,
+        ))
+
+    def content_rect(self) -> QRectF:
+        available = self._available_rect()
+        if available.isEmpty():
+            return QRectF()
+        render_pixmaps = self._render_pixmaps()
+        if not render_pixmaps:
+            return QRectF(available)
+
+        rects: list[QRectF] = []
+        layer_specs = [(0, available)]
+        if len(render_pixmaps) > 1:
+            layer_specs.append((1, available.translated(self.STACK_OFFSET_1)))
+        if len(render_pixmaps) > 2:
+            layer_specs.append((2, available.translated(self.STACK_OFFSET_2)))
+        for index, layer_rect in layer_specs:
+            scaled = render_pixmaps[index].scaled(
+                layer_rect.size().toSize(),
+                self.scale_mode,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            center = QRectF(layer_rect).center()
+            target = QRectF(
+                center.x() - scaled.width() / 2,
+                center.y() - scaled.height() / 2,
+                scaled.width(),
+                scaled.height(),
+            )
+            rects.append(target.adjusted(
+                -self.LAYER_BORDER_WIDTH,
+                -self.LAYER_BORDER_WIDTH,
+                self.LAYER_BORDER_WIDTH,
+                self.LAYER_BORDER_WIDTH + self.LAYER_SHADOW_OFFSET_Y,
+            ))
+
+        result = QRectF(rects[0])
+        for rect in rects[1:]:
+            result = result.united(rect)
+        return result
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
@@ -100,21 +212,22 @@ class StackedImagePreview(QWidget):
         option.initFrom(self)
         self.style().drawPrimitive(QStyle.PrimitiveElement.PE_Widget, option, painter, self)
 
-        if not self._pixmaps:
+        render_pixmaps = self._render_pixmaps()
+        if not render_pixmaps:
             painter.setPen(QColor(COLOR_MUTED))
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self._empty_text)
             return
 
-        available = self.rect().adjusted(14, 10, -14, -10)
-        if len(self._pixmaps) > 1:
-            self._draw_layer(painter, self._pixmaps[1], available.translated(12, 7), opacity=1.0, rotation=2.6)
-        if len(self._pixmaps) > 2:
-            self._draw_layer(painter, self._pixmaps[2], available.translated(20, 13), opacity=1.0, rotation=4.8)
-        self._draw_layer(painter, self._pixmaps[0], available, opacity=1.0, rotation=0.0)
+        available = self._available_rect()
+        if len(render_pixmaps) > 1:
+            self._draw_layer(painter, render_pixmaps[1], available.translated(self.STACK_OFFSET_1), opacity=1.0, rotation=2.6)
+        if len(render_pixmaps) > 2:
+            self._draw_layer(painter, render_pixmaps[2], available.translated(self.STACK_OFFSET_2), opacity=1.0, rotation=4.8)
+        self._draw_layer(painter, render_pixmaps[0], available, opacity=1.0, rotation=0.0)
 
     def _draw_layer(self, painter: QPainter, pixmap: QPixmap, rect, *, opacity: float, rotation: float) -> None:
         scaled = pixmap.scaled(
-            rect.size(),
+            QRectF(rect).size().toSize(),
             self.scale_mode,
             Qt.TransformationMode.SmoothTransformation,
         )
@@ -127,7 +240,7 @@ class StackedImagePreview(QWidget):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(2, 6, 23, 90))
         painter.drawRoundedRect(target.translated(0, 8), 10, 10)
-        border_width = 8
+        border_width = self.LAYER_BORDER_WIDTH
         border_rect = target.adjusted(-border_width, -border_width, border_width, border_width)
         if not self._ground_pixmap.isNull():
             ground_scaled = self._ground_pixmap.scaled(
@@ -314,8 +427,6 @@ class TiltImagePreview(QWidget):
         border_width = 20
         border_rect = target.adjusted(-border_width, -border_width, border_width, border_width)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(2, 6, 23, 95))
-        painter.drawRoundedRect(border_rect.translated(0, 18), 18, 18)
         if not self._ground_pixmap.isNull():
             ground_scaled = self._ground_pixmap.scaled(border_rect.size().toSize(), Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
             painter.drawPixmap(border_rect, ground_scaled, QRectF(ground_scaled.rect()))
@@ -400,6 +511,7 @@ class AlbumItem(QFrame):
         self.select_button.installEventFilter(self)
         layout.addWidget(self.select_button)
         self.rename_editor = QLineEdit(album.name)
+        apply_surface_shadow(self.rename_editor, blur_radius=18, y_offset=5, alpha=75)
         self.rename_editor.hide()
         self.rename_editor.returnPressed.connect(self.commit_rename)
         self.rename_editor.editingFinished.connect(self.commit_rename)
@@ -458,6 +570,7 @@ class PhotoCard(AnimatedFrame):
         self.open_callback = open_callback
         self.delete_callback = delete_callback
         self.setObjectName("PhotoCard")
+        self.setGraphicsEffect(None)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedSize(PHOTO_CARD_WIDTH, PHOTO_CARD_HEIGHT)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
@@ -470,13 +583,12 @@ class PhotoCard(AnimatedFrame):
         self.delete_button.setToolTip("删除照片")
         self.delete_button.setFixedSize(26, 26)
         self.delete_button.clicked.connect(self._delete_photo)
-        self._position_delete_button()
         self.preview = StackedImagePreview(theme=theme)
         self.preview.setFixedHeight(PHOTO_CARD_PREVIEW_HEIGHT)
         self.preview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         set_photo_pixmap(self.preview, photo, 220, 120)
         layout.addWidget(self.preview)
-        self.title_label = QLabel(photo.title)
+        self.title_label = OutlinedLabel(photo.title)
         self.title_label.setObjectName("CardTitle")
         self.title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.title_label.setWordWrap(True)
@@ -486,14 +598,17 @@ class PhotoCard(AnimatedFrame):
         title_font = QFont(FONT_FAMILY, BASE_FONT_POINT_SIZE)
         title_font.setBold(True)
         self.title_label.setFont(title_font)
+        apply_text_shadow(self.title_label)
         layout.addWidget(self.title_label)
-        self.meta_label = QLabel(photo_meta_text(photo))
+        self.meta_label = OutlinedLabel(photo_meta_text(photo))
         self.meta_label.setObjectName("CardMetaText")
         self.meta_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.meta_label.setContentsMargins(0, 0, 0, 0)
         self.meta_label.setMaximumHeight(PHOTO_CARD_META_HEIGHT)
         self.meta_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        apply_text_shadow(self.meta_label)
         layout.addWidget(self.meta_label)
+        self._position_delete_button()
 
     def mousePressEvent(self, event):
         super().mousePressEvent(event)
@@ -505,8 +620,20 @@ class PhotoCard(AnimatedFrame):
         self._position_delete_button()
 
     def _position_delete_button(self) -> None:
-        self.delete_button.move(self.width() - self.delete_button.width() - 12, 12)
+        preview_rect = self.preview_content_rect()
+        if preview_rect.isEmpty():
+            x = self.width() - self.delete_button.width() - 12
+            y = 12
+        else:
+            x = self.preview.x() + int(preview_rect.right()) - self.delete_button.width()
+            y = self.preview.y() + int(preview_rect.top()) - 6
+        x = max(0, min(x, self.width() - self.delete_button.width()))
+        y = max(0, min(y, self.height() - self.delete_button.height()))
+        self.delete_button.move(x, y)
         self.delete_button.raise_()
+
+    def preview_content_rect(self) -> QRectF:
+        return self.preview.content_rect()
 
     def set_grid_cell_size(self, width: int, height: int) -> None:
         self.setFixedSize(max(1, width), max(1, height))
@@ -542,6 +669,8 @@ class PhotoRow(AnimatedFrame):
         title.setObjectName("CardTitle")
         meta = QLabel(photo_meta_text(photo))
         meta.setObjectName("CardMetaText")
+        apply_text_shadow(title)
+        apply_text_shadow(meta)
         text.addWidget(title)
         text.addWidget(meta)
         layout.addLayout(text)
@@ -574,7 +703,7 @@ class PhotoRow(AnimatedFrame):
 
 def set_photo_pixmap(label: QWidget, photo: Photo, width: int, height: int) -> None:
     try:
-        pixmap = load_preview_pixmap(photo.stored_path, width, height)
+        pixmap = load_media_preview_pixmap(photo.stored_path, width, height)
     except OSError:
         pixmap = QPixmap()
     if pixmap.isNull():
